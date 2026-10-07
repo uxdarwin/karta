@@ -1,0 +1,7 @@
+'use client';
+import { useState } from 'react';
+export default function Rsvp(){
+ const [attendance,setAttendance]=useState('yes');
+ const [preview,setPreview]=useState(false);
+ return <section className="rsvp section" id="rsvp"><p className="eyebrow">UN LUGAR PARA TI</p><h2>¿Nos acompañas?</h2><p>Nos encantaría celebrar este día contigo.</p><p className="notice">Vista previa · Tu respuesta no se guarda ni se envía.</p><form onSubmit={e=>{e.preventDefault();setPreview(true);}} onChange={()=>setPreview(false)}><label htmlFor="name">Tu nombre completo</label><input id="name" name="name" autoComplete="name" required maxLength={120} pattern=".*\S.*" placeholder="Escribe tu nombre"/><fieldset><legend>¿Podrás asistir?</legend><div className="choices"><label><input type="radio" name="attendance" checked={attendance==='yes'} onChange={()=>setAttendance('yes')}/>¡Sí, ahí estaré!</label><label><input type="radio" name="attendance" checked={attendance==='no'} onChange={()=>setAttendance('no')}/>No podré asistir</label></div></fieldset>{attendance==='yes'&&<><label htmlFor="diet">¿Algo que debamos saber?</label><textarea id="diet" rows={2} maxLength={500} placeholder="Restricciones alimentarias (opcional)"/></>}<button className="button">VER MI RESPUESTA <span>↗</span></button>{preview&&<p role="status" className="feedback">{attendance==='yes'?'¡Qué alegría contar contigo!':'Gracias por hacernos saber.'} Esta es una prueba. No se ha guardado ni enviado tu respuesta.</p>}</form></section>;
+}
