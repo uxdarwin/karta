@@ -30,8 +30,9 @@ export function createMonogramRenderer(canvas: HTMLCanvasElement, options: Rende
     const context = await init({ powerPreference: 'low-power' });
     if (disposed) { context.dispose(); return; } gpu = context;
     enter('surface');
-    const output = surface(context, canvas, { dpr: [1, 1.5], alphaMode: 'premultiplied' });
-    scene = createGlassScene(context, output, geometry);
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const output = surface(context, canvas, { format, dpr: [1, 1.5], alphaMode: 'premultiplied' });
+    scene = createGlassScene(context, output, geometry, { colors: [format], sampleCount: 1 });
     context.onError(error => { if (!disposed) { dispose(); options.onError?.(new GlassError('render', error)); } });
     const buffer = document.createElement('canvas');
     const drawing = buffer.getContext('2d')!;

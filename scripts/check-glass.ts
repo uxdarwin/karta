@@ -4,7 +4,7 @@ import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { Resvg } from '@resvg/resvg-js';
-import { init, frame, target } from 'vgpu/node';
+import { init, frame, target, surface } from 'vgpu/node';
 import { createGlassScene } from '../app/glass/scene';
 import { DEFAULT_GLASS, type GlassParameters } from '../app/glass/parameters';
 import { generateDistanceField } from '../app/glass/geometry';
@@ -39,6 +39,25 @@ async function check() {
     return {rgba,ms:Math.round(performance.now()-before)};
   };
   try {
+    // Exercise the actual VGPU Surface lifecycle with a texture-backed canvas
+    // context. Offscreen targets alone cannot detect illegal swapchain access.
+    let acquired = 0;
+    const swapchain = gpu.gpu.createTexture({ size: [size, size], format: 'bgra8unorm', usage: 16 | 4 | 1 });
+    const canvas = {
+      width: size, height: size,
+      getContext: () => ({ configure() {}, unconfigure() {}, getCurrentTexture() { acquired++; return swapchain; } }),
+    } as unknown as HTMLCanvasElement;
+    const presentation = surface(gpu, canvas, { size: [size, size], format: 'bgra8unorm' });
+    const surfaceScene = createGlassScene(gpu, presentation, { size: atlas.width, rgba: new Uint8Array(atlas.data) }, { colors: ['bgra8unorm'], sampleCount: 1 });
+    try {
+      await surfaceScene.prepare();
+      assert.equal(acquired, 0, 'Shader preparation must not acquire a canvas texture outside frame');
+      surfaceScene.uploadPixels(background, size, size);
+      frame(gpu, current => surfaceScene.render(current, presentation, DEFAULT_GLASS));
+      await gpu.settled();
+      assert.ok(acquired > 0, 'Surface frame did not acquire the canvas texture');
+      assert.equal(errors.length, 0, errors.map(String).join('\n'));
+    } finally { surfaceScene.destroy(); presentation.dispose(); swapchain.destroy(); }
     await scene.prepare();
     const original=await render('source',{debugMode:'svg'});
     const solid=await render('solid',{debugMode:'solid'});

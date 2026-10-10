@@ -1,9 +1,9 @@
-import { effect, sampler, texture, type Gpu, type Frame, type Target } from 'vgpu';
+import { effect, sampler, texture, type Gpu, type Frame, type Target, type TargetSignature } from 'vgpu';
 import { glassWgsl } from './shaders';
 import { DEBUG_MODES, normalizeParameters, type GlassParameters } from './parameters';
 
 /** Isolated volume, one transparent pass. There is deliberately no background/floor pass. */
-export function createGlassScene(gpu: Gpu, output: Target, geometry: { size: number; rgba: Uint8Array }) {
+export function createGlassScene(gpu: Gpu, output: Target, geometry: { size: number; rgba: Uint8Array }, compileSignature?: TargetSignature) {
   const logo = texture(gpu, { kind: '2d', size: [geometry.size, geometry.size], format: 'rgba8unorm', usage: ['texture_binding', 'copy_dst'] });
   gpu.gpu.queue.writeTexture({ texture: logo.gpu }, geometry.rgba as Uint8Array<ArrayBuffer>, { bytesPerRow: geometry.size * 4 }, [geometry.size, geometry.size]);
   let background = texture(gpu, { kind: '2d', size: [1, 1], format: 'rgba8unorm', usage: ['texture_binding', 'copy_dst', 'render_attachment'] });
@@ -14,7 +14,9 @@ export function createGlassScene(gpu: Gpu, output: Target, geometry: { size: num
   let destroyed = false;
   let backgroundSize: readonly [number, number] = [1, 1];
   return {
-    prepare: () => glass.compile(output),
+    // Canvas attachments are ephemeral and cannot be read outside frame(gpu).
+    // Prewarm a surface pipeline using its explicit format, not the live surface.
+    prepare: () => glass.compile(compileSignature ?? output),
     uploadBackdrop(source: HTMLCanvasElement) {
       const size: [number, number] = [source.width, source.height];
       if (size[0] !== backgroundSize[0] || size[1] !== backgroundSize[1]) {
