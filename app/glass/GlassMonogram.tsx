@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { GlassError, type GlassStage } from './errors';
 import type { BackdropSource } from './backdrop';
 import { DEFAULT_GLASS, type GlassParameters } from './parameters';
 import type { createMonogramRenderer } from './renderer';
@@ -23,6 +24,7 @@ export default function GlassMonogram({ backdrop, parameters, svgUrl = '/monogra
     if (!backdrop) return;
     let cancelled = false; let settled = false;
     setStatus('loading');
+    let stage: GlassStage = 'module';
     const fallback = (error?: unknown) => {
       if (cancelled) return;
       renderer.current?.dispose();
@@ -30,12 +32,12 @@ export default function GlassMonogram({ backdrop, parameters, svgUrl = '/monogra
       if (error) callbacks.current.onError?.(error);
       if (!settled) { settled = true; callbacks.current.onReady?.('svg-fallback'); }
     };
-    const timeout = setTimeout(() => fallback(new Error('WebGPU initialization timed out')), 4500);
-    if (!navigator.gpu) { clearTimeout(timeout); fallback(); }
+    const timeout = setTimeout(() => fallback(new GlassError(stage, new Error('La inicialización superó el límite de 4,5 segundos.'))), 4500);
+    if (!navigator.gpu) { clearTimeout(timeout); fallback(new Error(window.isSecureContext ? 'Chrome no expone navigator.gpu en esta sesión. Revisa el estado de WebGPU en chrome://gpu; activar la aceleración gráfica no garantiza su disponibilidad.' : 'WebGPU requiere una conexión segura HTTPS. Esta página no está en un contexto seguro.')); }
     else import('./renderer').then(({ createMonogramRenderer }) => {
       if (cancelled || settled) return;
       const instance = createMonogramRenderer(canvas.current!, {
-        backdrop, svgUrl, parameters: settings.current, animate,
+        onStage: next => { stage = next; }, backdrop, svgUrl, parameters: settings.current, animate,
         onError: error => { clearTimeout(timeout); fallback(error); },
       });
       renderer.current = instance;
@@ -44,7 +46,7 @@ export default function GlassMonogram({ backdrop, parameters, svgUrl = '/monogra
         clearTimeout(timeout); settled = true; setStatus('webgpu');
         play(); callbacks.current.onReady?.('webgpu');
       }).catch(error => { clearTimeout(timeout); fallback(error); });
-    }).catch(error => { clearTimeout(timeout); fallback(error); });
+    }).catch(error => { clearTimeout(timeout); fallback(new GlassError('module', error)); });
     return () => { cancelled = true; clearTimeout(timeout); renderer.current?.dispose(); renderer.current = undefined; };
   }, [backdrop, svgUrl, animate]);
   useEffect(() => { renderer.current?.setParameters(parameters ?? {}); }, [parameters]);

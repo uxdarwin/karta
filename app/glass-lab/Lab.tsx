@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { describeGlassError } from '../glass/errors';
 import GlassMonogram from '../glass/GlassMonogram';
 import { createDomBackdrop, type BackdropSource } from '../glass/backdrop';
 import { DEFAULT_GLASS, type DebugMode, type GlassParameters } from '../glass/parameters';
@@ -43,7 +44,7 @@ export default function Lab() {
    {background==='image'&&<img ref={image} src={media?.type==='image'?media.url:'/floral.svg'} alt="Fondo de prueba" onLoad={()=>{setError('');setSource(image.current);}} onError={()=>setError('No se pudo cargar la imagen.')}/>}
    {background==='video'&&(media?.type==='video'?<video ref={video} src={media.url} muted autoPlay loop playsInline onLoadedData={()=>{setError('');setSource(video.current);}} onError={()=>setError('El navegador no puede reproducir este video.')}/>:<p className="media-hint">Selecciona un video local para probarlo.</p>)}
   </div>
-  <GlassMonogram backdrop={source} parameters={parameters} onReady={mode=>setStatus(mode==='webgpu'?'WebGPU · cristal 3D':'SVG · sin WebGPU')} onError={()=>{setError('WebGPU o la captura no está disponible. Se muestra el SVG original; no es una simulación de cristal.');}}/>
+  <GlassMonogram backdrop={source} parameters={parameters} onReady={mode=>setStatus(mode==='webgpu'?'WebGPU · cristal 3D':'SVG · renderizador 3D no disponible')} onError={error=>{setStatus('SVG · renderizador 3D no disponible');setError(describeGlassError(error)+' Se muestra el SVG original.');}}/>
  </div>
  <div className="lab-status" role="status">{status}{error&&<p>{error}</p>}</div>
  <section className="lab-controls" aria-label="Controles del cristal">

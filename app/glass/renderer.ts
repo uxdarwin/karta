@@ -1,3 +1,4 @@
+import { GlassError, type GlassStage } from './errors';
 import { init, frame, surface, type Gpu } from 'vgpu';
 import { loadGeometry } from './geometry';
 import { createGlassScene } from './scene';
@@ -6,7 +7,7 @@ import { normalizeParameters, type GlassParameters } from './parameters';
 
 export interface RendererOptions {
   svgUrl?: string; backdrop: BackdropSource; parameters?: Partial<GlassParameters>;
-  animate?: boolean; onError?: (error: unknown) => void;
+  animate?: boolean; onStage?: (stage: GlassStage) => void; onError?: (error: unknown) => void;
 }
 export function createMonogramRenderer(canvas: HTMLCanvasElement, options: RendererOptions) {
   let disposed = false, preparing = false;
@@ -19,18 +20,24 @@ export function createMonogramRenderer(canvas: HTMLCanvasElement, options: Rende
     if (disposed) return; disposed = true; cancelAnimationFrame(raf);
     if (!preparing) { scene?.destroy(); gpu?.dispose(); }
   };
+  let stage: GlassStage = 'geometry';
+  const enter = (next: GlassStage) => { stage = next; options.onStage?.(next); };
   const ready = (async () => {
+    enter('geometry');
     const geometry = await loadGeometry(options.svgUrl);
     if (disposed) return;
+    enter('device');
     const context = await init({ powerPreference: 'low-power' });
     if (disposed) { context.dispose(); return; } gpu = context;
+    enter('surface');
     const output = surface(context, canvas, { dpr: [1, 1.5], alphaMode: 'premultiplied' });
     scene = createGlassScene(context, output, geometry);
-    context.onError(error => { if (!disposed) { dispose(); options.onError?.(error); } });
+    context.onError(error => { if (!disposed) { dispose(); options.onError?.(new GlassError('render', error)); } });
     const buffer = document.createElement('canvas');
     const drawing = buffer.getContext('2d')!;
     let pending: Promise<void> | undefined; let backgroundError: unknown;
     const capture = async () => {
+      try {
       const pixels = typeof source === 'function' ? await source() : source;
       if (disposed) return;
       buffer.width = output.size[0]; buffer.height = output.size[1];
@@ -38,11 +45,13 @@ export function createMonogramRenderer(canvas: HTMLCanvasElement, options: Rende
       // Reading forces a clean CORS check before attempting a GPU copy.
       drawing.getImageData(0, 0, 1, 1);
       scene!.uploadBackdrop(buffer);
+      } catch (error) { throw new GlassError('backdrop', error); }
     };
     preparing = true;
-    try { await scene.prepare(); await capture(); }
+    try { enter('shader'); await scene.prepare(); enter('backdrop'); await capture(); }
     finally { preparing = false; if (disposed) { scene.destroy(); context.dispose(); } }
     if (disposed) return;
+    enter('render');
     const render = (now: number) => {
       if (disposed) return;
       if (now - lastFrame >= 1000 / 30 || !running) {
@@ -55,13 +64,13 @@ export function createMonogramRenderer(canvas: HTMLCanvasElement, options: Rende
           if (running && !pending) {
             pending = capture().catch(error => { backgroundError = error; }).finally(() => { pending = undefined; });
           }
-        } catch (error) { dispose(); options.onError?.(error); return; }
+        } catch (error) { dispose(); options.onError?.(error instanceof GlassError ? error : new GlassError('render', error)); return; }
       }
       if (running) raf = requestAnimationFrame(render);
     };
     render(performance.now());
     return () => { if (!disposed) { epoch = performance.now(); running = true; raf = requestAnimationFrame(render); } };
-  })();
+  })().catch(error => { dispose(); throw error instanceof GlassError ? error : new GlassError(stage, error); });
   return {
     ready, dispose,
     setParameters(values: Partial<GlassParameters>) { p = normalizeParameters({ ...p, ...values }); },
