@@ -1,52 +1,70 @@
-// Adapted from the VGPU glass-sculpture example.
-// Original concept and visual design: Kazuyuki Chinda (@ckazu).
-import { frame, init, surface, type Gpu } from 'vgpu';
-import { createScene, DEFAULT_CONTROLS } from './scene';
+import { init, frame, surface, type Gpu } from 'vgpu';
+import { loadGeometry } from './geometry';
+import { createGlassScene } from './scene';
+import { drawCover, type BackdropSource } from './backdrop';
+import { normalizeParameters, type GlassParameters } from './parameters';
 
-export function createMonogramRenderer(canvas: HTMLCanvasElement, onError: () => void) {
-  let disposed = false;
+export interface RendererOptions {
+  svgUrl?: string; backdrop: BackdropSource; parameters?: Partial<GlassParameters>;
+  animate?: boolean; onError?: (error: unknown) => void;
+}
+export function createMonogramRenderer(canvas: HTMLCanvasElement, options: RendererOptions) {
+  let disposed = false, preparing = false;
   let gpu: Gpu | undefined;
-  let cleanupResize: (() => void) | undefined;
-  let raf = 0;
-  let started = 0;
-  let preparing = false;
+  let scene: ReturnType<typeof createGlassScene> | undefined;
+  let raf = 0; let epoch = 0; let lastFrame = 0; let running = false;
+  let p = normalizeParameters(options.parameters);
+  let source = options.backdrop;
   const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    cancelAnimationFrame(raf);
-    cleanupResize?.();
-    if (!preparing) gpu?.dispose();
+    if (disposed) return; disposed = true; cancelAnimationFrame(raf);
+    if (!preparing) { scene?.destroy(); gpu?.dispose(); }
   };
   const ready = (async () => {
-    const response = await fetch('/monogram-sdf.bin');
-    if (!response.ok) throw new Error('Cannot load monogram distance field');
-    const field = await response.arrayBuffer();
-    if (field.byteLength !== 512 * 512 * 4) throw new Error('Invalid monogram distance field');
+    const geometry = await loadGeometry(options.svgUrl);
     if (disposed) return;
     const context = await init({ powerPreference: 'low-power' });
-    if (disposed) { context.dispose(); return; }
-    gpu = context;
-    context.onError(error => { if (!disposed) { console.warn('Glass renderer:', error); dispose(); onError(); } });
-    const output = surface(context, canvas, { dpr: [1, 1.25] });
-    const controls = { ...DEFAULT_CONTROLS, renderScale: 0.5 as const, dispersion: false, light: 'noir' as const };
-    const scene = createScene(context, output, controls, field);
+    if (disposed) { context.dispose(); return; } gpu = context;
+    const output = surface(context, canvas, { dpr: [1, 1.5], alphaMode: 'premultiplied' });
+    scene = createGlassScene(context, output, geometry);
+    context.onError(error => { if (!disposed) { dispose(); options.onError?.(error); } });
+    const buffer = document.createElement('canvas');
+    const drawing = buffer.getContext('2d')!;
+    let pending: Promise<void> | undefined; let backgroundError: unknown;
+    const capture = async () => {
+      const pixels = typeof source === 'function' ? await source() : source;
+      if (disposed) return;
+      buffer.width = output.size[0]; buffer.height = output.size[1];
+      drawCover(drawing, pixels, buffer.width, buffer.height);
+      // Reading forces a clean CORS check before attempting a GPU copy.
+      drawing.getImageData(0, 0, 1, 1);
+      scene!.uploadBackdrop(buffer);
+    };
     preparing = true;
-    try { await scene.prepare(output); } finally { preparing = false; if (disposed) context.dispose(); }
+    try { await scene.prepare(); await capture(); }
+    finally { preparing = false; if (disposed) { scene.destroy(); context.dispose(); } }
     if (disposed) return;
-    cleanupResize = output.onResize(() => scene.resize(output.size, controls.renderScale));
     const render = (now: number) => {
       if (disposed) return;
-      const seconds = started ? Math.min((now - started) / 1000, 3) : 0;
-      try {
-        frame(context, current => scene.render(current, output, { yaw: 0, pitch: 0.025, radius: 4.8 }, controls, {
-          sculptureTime: seconds, clockTime: seconds, deltaTime: 1 / 30, light: { azimuth: -0.65 + seconds * 0.55, elevation: 0.55 },
-        }));
-      } catch (error) { console.warn('Glass frame:', error); dispose(); onError(); return; }
-      // A static first frame is prepared before the three-second timeline begins.
-      if (started && seconds < 3) raf = requestAnimationFrame(render);
+      if (now - lastFrame >= 1000 / 30 || !running) {
+        const seconds = epoch ? (now - epoch) / 1000 : 0;
+        try {
+          if (backgroundError) throw backgroundError;
+          const yaw = options.animate ? Math.sin(Math.min(seconds, 3) * Math.PI / 3) * .12 : p.yaw;
+          frame(context, current => scene!.render(current, output, { ...p, yaw }, seconds));
+          lastFrame = now;
+          if (running && !pending) {
+            pending = capture().catch(error => { backgroundError = error; }).finally(() => { pending = undefined; });
+          }
+        } catch (error) { dispose(); options.onError?.(error); return; }
+      }
+      if (running) raf = requestAnimationFrame(render);
     };
     render(performance.now());
-    return () => { if (!disposed) { started = performance.now(); raf = requestAnimationFrame(render); } };
+    return () => { if (!disposed) { epoch = performance.now(); running = true; raf = requestAnimationFrame(render); } };
   })();
-  return { ready, dispose };
+  return {
+    ready, dispose,
+    setParameters(values: Partial<GlassParameters>) { p = normalizeParameters({ ...p, ...values }); },
+    setBackdrop(value: BackdropSource) { source = value; },
+  };
 }

@@ -12,9 +12,11 @@ Frontend only, no authentication or backend. RSVP responses are not saved or sen
 
 The invitation opens with a three-second intro (after graphics initialization), then reveals the hero. The floating **Intro · 3 s / Invitación** control replays or skips it. This control is temporary for design review.
 
-The glass renderer adapts the supplied VGPU glass-sculpture example (concept/design by Kazuyuki Chinda, @ckazu; MIT license included in `app/glass/LICENSE`). It ray-marches a shallow extrusion of the exact uploaded SVG using a precomputed 512×512 float32 signed distance field, with studio reflections, refraction and bloom. GPU resolution is capped for mobile performance. WebGPU is dynamically imported and disposed on completion, skip, replay, errors and unmount. Unsupported browsers, reduced motion or initialization over 1.8 seconds use a CSS/SVG fallback. Reduced motion uses a static monogram.
+The transparent glass layer extrudes the exact uploaded SVG from a 1024×1024 signed distance field. Its inward bevel preserves the silhouette. Refraction samples the supplied background; independent neutral reflection proxies provide highlights without a floor or baked scene. Unsupported WebGPU uses the original SVG. Reduced motion disables rotation.
 
-`public/monogram.svg` is the original supplied asset. `public/monogram-sdf.bin` is its derived distance field: SVG rasterized at 512px, alpha threshold 127, `(outside EDT - inside EDT) * 2 / 512`, serialized as little-endian float32. Regenerate it if the SVG changes. WGSL sources live in `app/glass`; `scripts/shaders.mjs` embeds them for Next.js before dev/build.
+Open `/glass` (the floating **Cristal** link) to compare original SVG, SDF, opaque geometry and glass. Try colors, gradients, patterns, images, video and DOM content, adjust the material, and overlay the original contour. Uploaded media stays in your browser.
+
+See [Glass monogram documentation](docs/GLASS_MONOGRAM.md) for component usage, parameter defaults, architecture, verification and limitations. `npm run dev` and `npm run build` regenerate the SDF and assemble the shader automatically.
 
 ## VGPU tools for development
 
@@ -22,6 +24,6 @@ The glass renderer adapts the supplied VGPU glass-sculpture example (concept/des
 
 Codex project MCP configuration is saved in `.codex/config.toml`. The local `vgpu` server uses the installed package's documentation and examples, and its initialization and documentation lookup have been tested. It is read-only. Codex must load this configuration in a new session; writing the file does not add tools to the running chat. The hosted `vgpu-hosted` server is registered but disabled until network access to `vgpu.sh` is applied, after which set `enabled = true`. It serves current hosted docs; use the local server as the authority for the project's version. Project configuration avoids requiring global installation on your computer.
 
-In this cloud environment, the verified portable CPU renderer is cached at `/workspace/.vgpu-cache`. Use `VGPU_CACHE_DIR=/workspace/.vgpu-cache npm run vgpu:doctor`. To reproduce its installation use `NODE_USE_ENV_PROXY=1 VGPU_CACHE_DIR=/workspace/.vgpu-cache npm exec --no -- vgpu install-software-renderer`. Its SHA-256 checks remain enabled. The doctor render and device-backed validation of `app/glass/sculpture.wgsl` passed.
+In this cloud environment, the verified portable CPU renderer is cached at `/workspace/.vgpu-cache`. Use `VGPU_CACHE_DIR=/workspace/.vgpu-cache npm run vgpu:doctor`. To reproduce its installation use `NODE_USE_ENV_PROXY=1 VGPU_CACHE_DIR=/workspace/.vgpu-cache npm exec --no -- vgpu install-software-renderer`. Its SHA-256 checks remain enabled. The doctor render and device-backed validation of `app/glass/glass.wgsl` passed.
 
-A 160×200 frame of the existing five-pass monogram scene was also rendered and read back through real CPU WebGPU. This verifies the render graph executes; it does not certify browser playback or final visual quality.
+Run `npm run check:glass` with the renderer cache configured to validate actual shader pixels. Run `npm run check:browser` against a server at localhost:3000 to validate the three-second timeline and controls; this test requires Chromium and ffmpeg and deliberately exercises the SVG fallback.

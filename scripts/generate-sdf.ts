@@ -1,0 +1,14 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { Resvg } from '@resvg/resvg-js';
+import { PNG } from 'pngjs';
+import { SDF_SIZE, generateDistanceField, packDistanceField } from '../app/glass/geometry';
+const svg = readFileSync('public/monogram.svg', 'utf8');
+const bitmap = new Resvg(svg, { fitTo: { mode: 'width', value: SDF_SIZE } }).render();
+if (bitmap.width !== SDF_SIZE || bitmap.height !== SDF_SIZE) throw Error('Monogram must have a square viewBox');
+const pixels = bitmap.pixels;
+const alpha = new Uint8Array(SDF_SIZE * SDF_SIZE);
+for (let i = 0; i < alpha.length; i++) alpha[i] = pixels[i * 4 + 3];
+const png = new PNG({ width: SDF_SIZE, height: SDF_SIZE });
+png.data.set(packDistanceField(generateDistanceField(alpha, SDF_SIZE), alpha));
+writeFileSync('public/monogram-sdf.png', PNG.sync.write(png));
+console.log(`Generated ${SDF_SIZE}px SDF from the original SVG.`);

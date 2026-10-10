@@ -7,22 +7,32 @@
     "build": "next build",
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "prebuild": "node scripts/shaders.mjs",
-    "predev": "node scripts/shaders.mjs",
+    "prebuild": "tsx scripts/generate-sdf.ts && node scripts/shaders.mjs",
+    "predev": "tsx scripts/generate-sdf.ts && node scripts/shaders.mjs",
     "vgpu": "vgpu",
-    "vgpu:doctor": "vgpu doctor"
+    "vgpu:doctor": "vgpu doctor",
+    "generate:sdf": "tsx scripts/generate-sdf.ts",
+    "check:glass": "tsx scripts/check-glass.ts",
+    "check:browser": "node scripts/check-browser.mjs"
   },
   "dependencies": {
     "@webgpu/types": "^0.1.74",
+    "html-to-image": "^1.11.13",
     "next": "^16.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "vgpu": "^0.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.0.0",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "esbuild": "^0.28.2",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.23.15",
     "typescript": "~5.9.3"
   },
   "type": "module"

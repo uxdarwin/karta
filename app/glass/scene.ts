@@ -1,338 +1,50 @@
-import {
-  effect,
-  sampler,
-  target,
-  type Effect,
-  type Frame,
-  type Gpu,
-  type Surface,
-  type Target,
-  texture,
-} from 'vgpu';
-import type { CameraState } from './camera';
-import { bloomBlurWgsl, bloomExtractWgsl, presentWgsl, sculptureWgsl } from './shaders';
+import { effect, sampler, texture, type Gpu, type Frame, type Target } from 'vgpu';
+import { glassWgsl } from './shaders';
+import { DEBUG_MODES, normalizeParameters, type GlassParameters } from './parameters';
 
-type Output = Surface | Target;
-type Vec3 = readonly [number, number, number];
-
-export const SHAPES = ['knot', 'gyroid', 'droplets'] as const;
-export const GLASS_TINTS = ['clear', 'rose', 'cobalt', 'emerald'] as const;
-export const LIGHT_RIG_NAMES = ['studio', 'noir', 'gel', 'golden'] as const;
-export const RENDER_SCALES = [0.5, 0.75, 1] as const;
-
-export type Shape = (typeof SHAPES)[number];
-export type GlassTint = (typeof GLASS_TINTS)[number];
-export type LightRigName = (typeof LIGHT_RIG_NAMES)[number];
-export type RenderScale = (typeof RENDER_SCALES)[number];
-
-export interface SculptureControls {
-  shape: Shape;
-  glass: GlassTint;
-  light: LightRigName;
-  dispersion: boolean;
-  spin: boolean;
-  renderScale: RenderScale;
-}
-
-export const DEFAULT_CONTROLS: SculptureControls = {
-  shape: 'gyroid',
-  glass: 'clear',
-  light: 'studio',
-  dispersion: true,
-  spin: true,
-  renderScale: 0.75,
-};
-
-interface LightRig {
-  readonly keyColor: Vec3;
-  readonly keyPower: number;
-  readonly rimColor: Vec3;
-  readonly rimPower: number;
-  readonly backgroundTop: Vec3;
-  readonly backgroundBottom: Vec3;
-  readonly floorLuminance: number;
-}
-
-interface MutableLightRig {
-  keyColor: [number, number, number];
-  keyPower: number;
-  rimColor: [number, number, number];
-  rimPower: number;
-  backgroundTop: [number, number, number];
-  backgroundBottom: [number, number, number];
-  floorLuminance: number;
-}
-
-const LIGHT_RIGS: Readonly<Record<LightRigName, LightRig>> = {
-  studio: {
-    keyColor: [1, 0.92, 0.82],
-    keyPower: 6,
-    rimColor: [0.65, 0.8, 1],
-    rimPower: 5,
-    backgroundTop: [0.95, 0.96, 1],
-    backgroundBottom: [0.3, 0.31, 0.34],
-    floorLuminance: 1.4,
-  },
-  noir: {
-    keyColor: [1, 0.97, 0.92],
-    keyPower: 16,
-    rimColor: [0.35, 0.45, 0.8],
-    rimPower: 9,
-    backgroundTop: [0.1, 0.1, 0.12],
-    backgroundBottom: [0.02, 0.02, 0.03],
-    floorLuminance: 1.6,
-  },
-  gel: {
-    keyColor: [1, 0.4, 0.3],
-    keyPower: 11,
-    rimColor: [0.15, 0.8, 1],
-    rimPower: 11,
-    backgroundTop: [0.16, 0.08, 0.22],
-    backgroundBottom: [0.04, 0.02, 0.07],
-    floorLuminance: 1.3,
-  },
-  golden: {
-    keyColor: [1, 0.72, 0.42],
-    keyPower: 9,
-    rimColor: [0.45, 0.55, 0.9],
-    rimPower: 3,
-    backgroundTop: [1, 0.78, 0.55],
-    backgroundBottom: [0.36, 0.2, 0.14],
-    floorLuminance: 1.25,
-  },
-};
-
-const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
-const BLOOM_STRENGTH = 0.45;
-const RIG_EASE_RATE = 2.45;
-
-interface SceneTargets {
-  readonly hdr: Target;
-  readonly bloomA: Target;
-  readonly bloomB: Target;
-}
-
-export interface SculptureScene {
-  prepare(output: Output): Promise<void>;
-  resize(outputSize: readonly [number, number], renderScale: number): void;
-  render(
-    currentFrame: Frame,
-    output: Output,
-    camera: CameraState,
-    controls: Readonly<SculptureControls>,
-    state: {
-      readonly sculptureTime: number;
-      readonly clockTime: number;
-      readonly deltaTime: number;
-      readonly light: { readonly azimuth: number; readonly elevation: number };
-    },
-  ): void;
-  destroy(): void;
-}
-
-export function createScene(
-  gpu: Gpu,
-  output: Output,
-  controls: Readonly<SculptureControls>,
-  distanceField: ArrayBuffer,
-): SculptureScene {
-  const linearSampler = sampler(gpu, {
-    minFilter: 'linear',
-    magFilter: 'linear',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  });
-  const monogram = texture(gpu, { kind: '2d', size: [512, 512], format: 'r32float', usage: ['texture_binding', 'copy_dst'] });
-  gpu.gpu.queue.writeTexture({ texture: monogram.gpu }, distanceField, { bytesPerRow: 512 * 4 }, [512, 512]);
-  const sculpture = effect(gpu, sculptureWgsl, { label: 'glass-sculpture' });
-  const extract = effect(gpu, bloomExtractWgsl, { label: 'glass-sculpture-bloom-extract' });
-  const blurHorizontal = effect(gpu, bloomBlurWgsl, { label: 'glass-sculpture-bloom-horizontal' });
-  const blurVertical = effect(gpu, bloomBlurWgsl, { label: 'glass-sculpture-bloom-vertical' });
-  const present = effect(gpu, presentWgsl, { label: 'glass-sculpture-present' });
-  const targets = createTargets(gpu, output.size, controls.renderScale);
-  const rig = copyRig(LIGHT_RIGS[controls.light]);
+/** Isolated volume, one transparent pass. There is deliberately no background/floor pass. */
+export function createGlassScene(gpu: Gpu, output: Target, geometry: { size: number; rgba: Uint8Array }) {
+  const logo = texture(gpu, { kind: '2d', size: [geometry.size, geometry.size], format: 'rgba8unorm', usage: ['texture_binding', 'copy_dst'] });
+  gpu.gpu.queue.writeTexture({ texture: logo.gpu }, geometry.rgba as Uint8Array<ArrayBuffer>, { bytesPerRow: geometry.size * 4 }, [geometry.size, geometry.size]);
+  let background = texture(gpu, { kind: '2d', size: [1, 1], format: 'rgba8unorm', usage: ['texture_binding', 'copy_dst', 'render_attachment'] });
+  gpu.gpu.queue.writeTexture({ texture: background.gpu }, new Uint8Array([230, 233, 225, 255]), { bytesPerRow: 4 }, [1, 1]);
+  const linear = sampler(gpu, { minFilter: 'linear', magFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+  const glass = effect(gpu, glassWgsl, { label: 'floating-glass-monogram' });
+  glass.set({ logo_sdf: logo, backdrop: background, backdrop_sampler: linear });
   let destroyed = false;
-
-  try {
-    sculpture.set({ monogram });
-    bindTargets();
-  } catch (error) {
-    destroyTarget(targets.bloomB);
-    destroyTarget(targets.bloomA);
-    destroyTarget(targets.hdr);
-    throw error;
-  }
-
+  let backgroundSize: readonly [number, number] = [1, 1];
   return {
-    async prepare(currentOutput) {
-      await Promise.all([
-        sculpture.compile(targets.hdr),
-        extract.compile(targets.bloomA),
-        blurHorizontal.compile(targets.bloomB),
-        blurVertical.compile(targets.bloomA),
-        present.compile({ colors: [currentOutput.format] }),
-      ]);
+    prepare: () => glass.compile(output),
+    uploadBackdrop(source: HTMLCanvasElement) {
+      const size: [number, number] = [source.width, source.height];
+      if (size[0] !== backgroundSize[0] || size[1] !== backgroundSize[1]) {
+        const previous = background;
+        background = texture(gpu, { kind: '2d', size, format: 'rgba8unorm', usage: ['texture_binding', 'copy_dst', 'render_attachment'] });
+        glass.set({ backdrop: background });
+        previous.destroy(); backgroundSize = size;
+      }
+      gpu.gpu.queue.copyExternalImageToTexture({ source }, { texture: background.gpu, premultipliedAlpha: false }, size);
     },
-    resize(outputSize, renderScale) {
+    // Deterministic raw upload is also useful for headless tests and procedural backgrounds.
+    uploadPixels(rgba: Uint8Array, width: number, height: number) {
+      if (backgroundSize[0] !== width || backgroundSize[1] !== height) {
+        const previous = background;
+        background = texture(gpu, { kind: '2d', size: [width, height], format: 'rgba8unorm', usage: ['texture_binding', 'copy_dst', 'render_attachment'] });
+        glass.set({ backdrop: background }); previous.destroy(); backgroundSize = [width, height];
+      }
+      gpu.gpu.queue.writeTexture({ texture: background.gpu }, rgba as Uint8Array<ArrayBuffer>, { bytesPerRow: width * 4 }, [width, height]);
+    },
+    render(current: Frame, target: Target, values: Partial<GlassParameters>, time = 0) {
       if (destroyed) return;
-      const [width, height] = scaledSize(outputSize, renderScale);
-      targets.hdr.resize([width, height]);
-      const bloomSize: [number, number] = [
-        Math.max(1, Math.floor(width / 4)),
-        Math.max(1, Math.floor(height / 4)),
-      ];
-      targets.bloomA.resize(bloomSize);
-      targets.bloomB.resize(bloomSize);
-      bindTargets();
+      const p = normalizeParameters(values);
+      glass.set({ params: {
+        resolution: target.size, logo_scale: p.logoScale, depth: p.depth, bevel: p.bevelRadius,
+        ior: p.ior, roughness: p.roughness, absorption: p.absorptionStrength,
+        highlight: p.highlightStrength, distortion: p.distortionStrength, debug_mode: DEBUG_MODES.indexOf(p.debugMode), overlay: p.overlay ? 1 : 0,
+        yaw: p.yaw, time, padding: [0, 0], tint: [...p.tint, 0],
+      } });
+      current.pass({ target, clear: [0, 0, 0, 0] }, pass => pass.draw(glass));
     },
-    render(currentFrame, currentOutput, camera, currentControls, state) {
-      if (destroyed) return;
-      easeRig(rig, LIGHT_RIGS[currentControls.light], state.deltaTime);
-      const keyDirection = lightDirection(camera.yaw + state.light.azimuth, state.light.elevation);
-      const rimDirection = lightDirection(camera.yaw + state.light.azimuth + Math.PI * 0.85, 0.35);
-      sculpture.set({
-        params: {
-          resolution: targets.hdr.size,
-          shape: SHAPES.indexOf(currentControls.shape),
-          tint: GLASS_TINTS.indexOf(currentControls.glass),
-          time: state.sculptureTime,
-          quality: currentControls.renderScale,
-          yaw: camera.yaw,
-          pitch: camera.pitch,
-          radius: camera.radius,
-          dispersion: currentControls.dispersion ? 1 : 0,
-          strip_angle: 0.8 + state.clockTime * 0.1,
-          floor_luminance: rig.floorLuminance,
-          padding: 0,
-          key: [...keyDirection, rig.keyPower],
-          key_color: [...rig.keyColor, 0],
-          rim: [...rimDirection, rig.rimPower],
-          rim_color: [...rig.rimColor, 0],
-          background_top: [...rig.backgroundTop, 0],
-          background_bottom: [...rig.backgroundBottom, 0],
-        },
-      });
-      present.set({ params: { time: state.clockTime } });
-      currentFrame.pass(targets.hdr, sculpture);
-      currentFrame.pass(targets.bloomA, extract);
-      currentFrame.pass(targets.bloomB, blurHorizontal);
-      currentFrame.pass(targets.bloomA, blurVertical);
-      currentFrame.pass(currentOutput, present);
-    },
-    destroy() {
-      if (destroyed) return;
-      destroyed = true;
-      destroyTarget(targets.bloomB);
-      destroyTarget(targets.bloomA);
-      destroyTarget(targets.hdr);
-    },
-  };
-
-  function bindTargets() {
-    extract.set({
-      params: {
-        texel: targets.hdr.texelSize,
-        threshold: 1,
-        padding: 0,
-      },
-      source: targets.hdr,
-      linear_sampler: linearSampler,
-    });
-    blurHorizontal.set({
-      params: { direction: [targets.bloomA.texelSize[0], 0], padding: [0, 0] },
-      source: targets.bloomA,
-      linear_sampler: linearSampler,
-    });
-    blurVertical.set({
-      params: { direction: [0, targets.bloomB.texelSize[1]], padding: [0, 0] },
-      source: targets.bloomB,
-      linear_sampler: linearSampler,
-    });
-    present.set({
-      params: { bloom_strength: BLOOM_STRENGTH, time: 0, padding: [0, 0] },
-      scene_texture: targets.hdr,
-      bloom_texture: targets.bloomA,
-      linear_sampler: linearSampler,
-    });
-  }
-}
-
-function createTargets(gpu: Gpu, outputSize: readonly [number, number], renderScale: number): SceneTargets {
-  const owned: Target[] = [];
-  const own = (created: Target) => {
-    owned.push(created);
-    return created;
-  };
-  try {
-    const [width, height] = scaledSize(outputSize, renderScale);
-    const bloomSize: [number, number] = [
-      Math.max(1, Math.floor(width / 4)),
-      Math.max(1, Math.floor(height / 4)),
-    ];
-    return {
-      hdr: own(target(gpu, { size: [width, height], format: HDR_FORMAT, label: 'glass-sculpture-hdr' })),
-      bloomA: own(target(gpu, { size: bloomSize, format: HDR_FORMAT, label: 'glass-sculpture-bloom-a' })),
-      bloomB: own(target(gpu, { size: bloomSize, format: HDR_FORMAT, label: 'glass-sculpture-bloom-b' })),
-    };
-  } catch (error) {
-    for (const resource of owned.reverse()) destroyTarget(resource);
-    throw error;
-  }
-}
-
-function scaledSize(size: readonly [number, number], renderScale: number): [number, number] {
-  const scale = Number.isFinite(renderScale)
-    ? Math.max(RENDER_SCALES[0], Math.min(RENDER_SCALES.at(-1)!, renderScale))
-    : DEFAULT_CONTROLS.renderScale;
-  return [
-    Math.max(1, Math.floor(size[0] * scale)),
-    Math.max(1, Math.floor(size[1] * scale)),
-  ];
-}
-
-function lightDirection(azimuth: number, elevation: number): Vec3 {
-  const radius = Math.cos(elevation);
-  return [Math.sin(azimuth) * radius, Math.sin(elevation), Math.cos(azimuth) * radius];
-}
-
-function copyRig(source: LightRig): MutableLightRig {
-  return {
-    keyColor: [...source.keyColor],
-    keyPower: source.keyPower,
-    rimColor: [...source.rimColor],
-    rimPower: source.rimPower,
-    backgroundTop: [...source.backgroundTop],
-    backgroundBottom: [...source.backgroundBottom],
-    floorLuminance: source.floorLuminance,
-  };
-}
-
-function easeRig(current: MutableLightRig, goal: LightRig, deltaTime: number): void {
-  const blend = 1 - Math.exp(-RIG_EASE_RATE * Math.max(0, Math.min(0.1, deltaTime)));
-  for (let channel = 0; channel < 3; channel++) {
-    current.keyColor[channel] += (goal.keyColor[channel] - current.keyColor[channel]) * blend;
-    current.rimColor[channel] += (goal.rimColor[channel] - current.rimColor[channel]) * blend;
-    current.backgroundTop[channel] += (goal.backgroundTop[channel] - current.backgroundTop[channel]) * blend;
-    current.backgroundBottom[channel] += (goal.backgroundBottom[channel] - current.backgroundBottom[channel]) * blend;
-  }
-  current.keyPower += (goal.keyPower - current.keyPower) * blend;
-  current.rimPower += (goal.rimPower - current.rimPower) * blend;
-  current.floorLuminance += (goal.floorLuminance - current.floorLuminance) * blend;
-}
-
-function destroyTarget(resource: Target): void {
-  (resource as Target & { destroy(): void }).destroy();
-}
-
-export function normalizeControls(controls: Readonly<SculptureControls>): SculptureControls {
-  return {
-    shape: SHAPES.includes(controls.shape) ? controls.shape : DEFAULT_CONTROLS.shape,
-    glass: GLASS_TINTS.includes(controls.glass) ? controls.glass : DEFAULT_CONTROLS.glass,
-    light: LIGHT_RIG_NAMES.includes(controls.light) ? controls.light : DEFAULT_CONTROLS.light,
-    dispersion: controls.dispersion === true,
-    spin: controls.spin !== false,
-    renderScale: RENDER_SCALES.includes(controls.renderScale)
-      ? controls.renderScale
-      : DEFAULT_CONTROLS.renderScale,
+    destroy() { if (destroyed) return; destroyed = true; logo.destroy(); background.destroy(); },
   };
 }
