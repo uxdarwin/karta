@@ -8,7 +8,9 @@
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "prebuild": "node scripts/shaders.mjs",
-    "predev": "node scripts/shaders.mjs"
+    "predev": "node scripts/shaders.mjs",
+    "vgpu": "vgpu",
+    "vgpu:doctor": "vgpu doctor"
   },
   "dependencies": {
     "@webgpu/types": "^0.1.74",

@@ -1,0 +1,9 @@
+# Hosted docs require network access to vgpu.sh; enable after applying environment settings.
+[mcp_servers.vgpu-hosted]
+enabled = false
+url = "https://vgpu.sh/api/mcp"
+
+# Use the project's locked VGPU version as the primary documentation source.
+[mcp_servers.vgpu]
+command = "npm"
+args = ["exec", "--no", "--", "vgpu", "mcp"]
